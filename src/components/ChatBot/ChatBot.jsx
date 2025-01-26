@@ -2,8 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { MessageCircle, X, FileDown, Shield } from 'lucide-react';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { analyzePSCData } from '../../utils/pscAnalysis';
-import { fetchPSCData, CRITICALITY_MAPPING } from '../../utils/pscService';
+import { analyzePSCData, CRITICALITY_MAPPING } from '../../utils/pscAnalysis';
+import { fetchPSCData } from '../../services/pscService';
 
 const ChatBot = ({ data, vesselName, filters }) => {
   const [isOpen, setIsOpen] = useState(false);
