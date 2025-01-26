@@ -1,8 +1,6 @@
-// src/components/ChatBot/ChatBot.jsx
 import React, { useState, useEffect } from 'react';
 import { MessageCircle, X, FileDown, Shield } from 'lucide-react';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { analyzePSCData, CRITICALITY_MAPPING } from '../../utils/pscAnalysis';
 import { fetchPSCData } from '../../services/pscService';
 
 const ChatBot = ({ data, vesselName, filters }) => {
@@ -10,19 +8,6 @@ const ChatBot = ({ data, vesselName, filters }) => {
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([]);
   const [userInput, setUserInput] = useState('');
-  const [pscAnalyzer, setPscAnalyzer] = useState(null);
-
-  useEffect(() => {
-    const loadPSCData = async () => {
-      try {
-        const pscData = await fetchPSCData();
-        setPscAnalyzer(analyzePSCData(pscData));
-      } catch (error) {
-        console.error('Error loading PSC data:', error);
-      }
-    };
-    loadPSCData();
-  }, []);
 
   const generatePDF = async () => {
     try {
@@ -30,7 +15,7 @@ const ChatBot = ({ data, vesselName, filters }) => {
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage();
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      
+
       // Add title
       page.drawText('PSC Deficiencies Report', {
         x: 50,
@@ -59,7 +44,7 @@ const ChatBot = ({ data, vesselName, filters }) => {
             page = pdfDoc.addPage();
             yPosition = page.getHeight() - 50;
           }
-          
+
           page.drawText(`${index + 1}. ${item.deficiency}`, {
             x: 50,
             y: yPosition,
@@ -67,7 +52,7 @@ const ChatBot = ({ data, vesselName, filters }) => {
             font,
             color: rgb(0, 0, 0),
           });
-          
+
           yPosition -= 20;
         });
       }
@@ -90,70 +75,46 @@ const ChatBot = ({ data, vesselName, filters }) => {
   };
 
   const handlePSCQuery = async (query) => {
-    if (!pscAnalyzer) {
-      return "PSC data is still loading...";
-    }
-
     const queryLower = query.toLowerCase();
     let response = '';
 
     try {
-      if (queryLower.includes('common deficiencies')) {
-        const common = pscAnalyzer.getCommonDeficiencies();
-        response = 'Most common PSC deficiencies:\n\n' + 
-          common.map(([def, count], i) => 
-            `${i + 1}. ${def}\n   Occurrences: ${count}`).join('\n\n');
-      }
-      else if (queryLower.includes('detention')) {
-        const detentions = pscAnalyzer.getDetentionAnalysis();
-        response = 'Recent Detention Cases:\n\n' + 
-          detentions.slice(0, 5).map(d => 
-            `Port: ${d.port}, ${d.country}\n` +
-            `Date: ${d.date}\n` +
-            `Vessel Type: ${d.vesselType}\n` +
-            `Reason: ${d.deficiency}`
-          ).join('\n\n');
-      }
-      else if (queryLower.includes('criticality')) {
-        const criticalities = pscAnalyzer.getDeficienciesByCriticality();
-        response = 'Deficiencies by Criticality Level:\n\n' + 
-          Object.entries(criticalities)
-            .map(([level, count]) => `${level}: ${count} cases`)
+      if (queryLower.includes('most common deficiencies')) {
+        const apiResponse = await fetch(
+          'https://pscragapi-production.up.railway.app/common-deficiencies'
+        );
+        const data = await apiResponse.json();
+        response =
+          'Most common PSC deficiencies:\n\n' +
+          data
+            .map(
+              (item, index) =>
+                `${index + 1}. ${item.deficiency}\n   Occurrences: ${item.count}`
+            )
             .join('\n\n');
-      }
-      else if (queryLower.includes('port')) {
-        const portData = pscAnalyzer.getDeficienciesByPort();
-        response = 'Top Ports with Deficiencies:\n\n' + 
-          Object.entries(portData)
-            .sort(([,a], [,b]) => b.count - a.count)
-            .slice(0, 5)
-            .map(([port, data]) => 
-              `${port}, ${data.country}\n` +
-              `Total deficiencies: ${data.count}\n` +
-              `Detentions: ${data.detentions}`
-            ).join('\n\n');
-      }
-      else if (queryLower.includes('search')) {
-        const searchTerm = queryLower.replace('search', '').trim();
-        const results = pscAnalyzer.searchDeficiencies(searchTerm);
-        response = `Search results for "${searchTerm}":\n\n` +
-          results.map((r, i) => 
-            `${i + 1}. ${r['Nature of deficiency']}\n` +
-            `   Criticality: ${CRITICALITY_MAPPING[r['Reference Code1']] || 'Unknown'}`
-          ).join('\n\n');
-      }
-      else {
-        response = "I can help you with PSC deficiencies analysis. Try asking:\n\n" +
-          "• Show common deficiencies\n" +
-          "• Show detention cases\n" +
-          "• Show deficiencies by criticality\n" +
-          "• Show port-wise analysis\n" +
-          "• Search [term] for specific deficiencies\n\n" +
+      } else if (queryLower.includes('detainable deficiencies in australian ports')) {
+        const apiResponse = await fetch(
+          'https://pscragapi-production.up.railway.app/detainable-deficiencies?country=Australia'
+        );
+        const data = await apiResponse.json();
+        response =
+          'Top Ports with Deficiencies:\n\n' +
+          data
+            .map(
+              (item, index) =>
+                `${index + 1}. ${item.port}\n   Detentions: ${item.detentions}`
+            )
+            .join('\n\n');
+      } else {
+        response =
+          "I can help you with PSC deficiencies analysis. Try asking:\n\n" +
+          "• Show most common deficiencies\n" +
+          "• Show detainable deficiencies in Australian ports\n\n" +
           "You can also generate a defects report using the button below.";
       }
     } catch (error) {
-      console.error('Error processing query:', error);
-      response = "Sorry, I encountered an error processing your request. Please try again.";
+      console.error('Error fetching data:', error);
+      response = 'Sorry, I encountered an error processing your request. Please try again.';
     }
 
     return response;
@@ -164,18 +125,21 @@ const ChatBot = ({ data, vesselName, filters }) => {
 
     const newMessage = {
       text: userInput,
-      type: 'user'
+      type: 'user',
     };
 
-    setMessages(prev => [...prev, newMessage]);
+    setMessages((prev) => [...prev, newMessage]);
     setUserInput('');
 
     const response = await handlePSCQuery(userInput);
-    
-    setMessages(prev => [...prev, {
-      text: response,
-      type: 'bot'
-    }]);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        text: response,
+        type: 'bot',
+      },
+    ]);
   };
 
   return (
@@ -219,8 +183,8 @@ const ChatBot = ({ data, vesselName, filters }) => {
                 <div
                   key={index}
                   className={`${
-                    message.type === 'user' 
-                      ? 'bg-orange-500/10 ml-auto' 
+                    message.type === 'user'
+                      ? 'bg-orange-500/10 ml-auto'
                       : 'bg-white/5'
                   } rounded-lg p-3 max-w-[80%]`}
                 >
