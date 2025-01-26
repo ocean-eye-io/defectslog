@@ -1,18 +1,17 @@
+// src/components/ChatBot/ChatBot.jsx
 import React, { useState, useEffect } from 'react';
 import { MessageCircle, X, FileDown, Shield } from 'lucide-react';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { analyzePSCData } from '../../utils/pscAnalysis';
-import { fetchPSCData } from '../../services/pscService';
+import { fetchPSCData, CRITICALITY_MAPPING } from '../../services/pscService';
 
 const ChatBot = ({ data, vesselName, filters }) => {
-  // Keep your existing state variables
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([]);
   const [userInput, setUserInput] = useState('');
   const [pscAnalyzer, setPscAnalyzer] = useState(null);
 
-  // Add new state for PSC data
   useEffect(() => {
     const loadPSCData = async () => {
       try {
@@ -25,8 +24,70 @@ const ChatBot = ({ data, vesselName, filters }) => {
     loadPSCData();
   }, []);
 
-  // Keep your existing generatePDF function unchanged
-  // ... (your existing generatePDF function)
+  const generatePDF = async () => {
+    try {
+      setLoading(true);
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage();
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      
+      // Add title
+      page.drawText('PSC Deficiencies Report', {
+        x: 50,
+        y: page.getHeight() - 50,
+        size: 20,
+        font,
+        color: rgb(0, 0, 0),
+      });
+
+      // Add vessel info if available
+      if (vesselName) {
+        page.drawText(`Vessel: ${vesselName}`, {
+          x: 50,
+          y: page.getHeight() - 80,
+          size: 12,
+          font,
+          color: rgb(0, 0, 0),
+        });
+      }
+
+      // Add deficiencies data
+      if (data && data.length > 0) {
+        let yPosition = page.getHeight() - 120;
+        data.forEach((item, index) => {
+          if (yPosition < 50) {
+            page = pdfDoc.addPage();
+            yPosition = page.getHeight() - 50;
+          }
+          
+          page.drawText(`${index + 1}. ${item.deficiency}`, {
+            x: 50,
+            y: yPosition,
+            size: 10,
+            font,
+            color: rgb(0, 0, 0),
+          });
+          
+          yPosition -= 20;
+        });
+      }
+
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${vesselName || 'vessel'}-psc-deficiencies.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handlePSCQuery = async (query) => {
     if (!pscAnalyzer) {
@@ -196,7 +257,7 @@ const ChatBot = ({ data, vesselName, filters }) => {
               </div>
             </div>
 
-            {/* Keep your existing Generate Report button */}
+            {/* Generate Report Button */}
             <div className="p-4 border-t border-white/10">
               <button
                 onClick={generatePDF}
