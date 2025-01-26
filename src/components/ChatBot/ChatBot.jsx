@@ -1,228 +1,120 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MessageCircle, X, FileDown, Shield } from 'lucide-react';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { analyzePSCData } from '../../utils/pscAnalysis';
+import { fetchPSCData } from '../../services/pscService';
 
 const ChatBot = ({ data, vesselName, filters }) => {
+  // Keep your existing state variables
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [userInput, setUserInput] = useState('');
+  const [pscAnalyzer, setPscAnalyzer] = useState(null);
 
-  const sanitizeText = (text) => {
-    if (!text) return '-';
-    return text
-      .toString()
-      .replace(/[\n\r]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/[^\x00-\x7F]/g, '')
-      .replace(/[^\w\s-.,]/g, '');
-  };
-
-  const truncateText = (text, maxWidth, fontSize, font) => {
-    if (!text) return '-';
-    let truncated = sanitizeText(text);
-
-    try {
-      if (font.widthOfTextAtSize(truncated, fontSize) > maxWidth) {
-        let ellipsis = '...';
-        let width = font.widthOfTextAtSize(ellipsis, fontSize);
-        let result = '';
-
-        for (let i = 0; i < truncated.length; i++) {
-          let char = truncated[i];
-          let charWidth = font.widthOfTextAtSize(char, fontSize);
-          if (width + charWidth > maxWidth - font.widthOfTextAtSize('...', fontSize)) {
-            break;
-          }
-          result += char;
-          width += charWidth;
-        }
-
-        return result + ellipsis;
+  // Add new state for PSC data
+  useEffect(() => {
+    const loadPSCData = async () => {
+      try {
+        const pscData = await fetchPSCData();
+        setPscAnalyzer(analyzePSCData(pscData));
+      } catch (error) {
+        console.error('Error loading PSC data:', error);
       }
-      return truncated;
-    } catch (error) {
-      console.error('Error truncating text:', error);
-      return text.substring(0, 20) + '...';
+    };
+    loadPSCData();
+  }, []);
+
+  // Keep your existing generatePDF function unchanged
+  // ... (your existing generatePDF function)
+
+  const handlePSCQuery = async (query) => {
+    if (!pscAnalyzer) {
+      return "PSC data is still loading...";
     }
+
+    const queryLower = query.toLowerCase();
+    let response = '';
+
+    try {
+      if (queryLower.includes('common deficiencies')) {
+        const common = pscAnalyzer.getCommonDeficiencies();
+        response = 'Most common PSC deficiencies:\n\n' + 
+          common.map(([def, count], i) => 
+            `${i + 1}. ${def}\n   Occurrences: ${count}`).join('\n\n');
+      }
+      else if (queryLower.includes('detention')) {
+        const detentions = pscAnalyzer.getDetentionAnalysis();
+        response = 'Recent Detention Cases:\n\n' + 
+          detentions.slice(0, 5).map(d => 
+            `Port: ${d.port}, ${d.country}\n` +
+            `Date: ${d.date}\n` +
+            `Vessel Type: ${d.vesselType}\n` +
+            `Reason: ${d.deficiency}`
+          ).join('\n\n');
+      }
+      else if (queryLower.includes('criticality')) {
+        const criticalities = pscAnalyzer.getDeficienciesByCriticality();
+        response = 'Deficiencies by Criticality Level:\n\n' + 
+          Object.entries(criticalities)
+            .map(([level, count]) => `${level}: ${count} cases`)
+            .join('\n\n');
+      }
+      else if (queryLower.includes('port')) {
+        const portData = pscAnalyzer.getDeficienciesByPort();
+        response = 'Top Ports with Deficiencies:\n\n' + 
+          Object.entries(portData)
+            .sort(([,a], [,b]) => b.count - a.count)
+            .slice(0, 5)
+            .map(([port, data]) => 
+              `${port}, ${data.country}\n` +
+              `Total deficiencies: ${data.count}\n` +
+              `Detentions: ${data.detentions}`
+            ).join('\n\n');
+      }
+      else if (queryLower.includes('search')) {
+        const searchTerm = queryLower.replace('search', '').trim();
+        const results = pscAnalyzer.searchDeficiencies(searchTerm);
+        response = `Search results for "${searchTerm}":\n\n` +
+          results.map((r, i) => 
+            `${i + 1}. ${r['Nature of deficiency']}\n` +
+            `   Criticality: ${CRITICALITY_MAPPING[r['Reference Code1']] || 'Unknown'}`
+          ).join('\n\n');
+      }
+      else {
+        response = "I can help you with PSC deficiencies analysis. Try asking:\n\n" +
+          "• Show common deficiencies\n" +
+          "• Show detention cases\n" +
+          "• Show deficiencies by criticality\n" +
+          "• Show port-wise analysis\n" +
+          "• Search [term] for specific deficiencies\n\n" +
+          "You can also generate a defects report using the button below.";
+      }
+    } catch (error) {
+      console.error('Error processing query:', error);
+      response = "Sorry, I encountered an error processing your request. Please try again.";
+    }
+
+    return response;
   };
 
-  const generatePDF = async () => {
-    try {
-      setLoading(true);
+  const handleMessageSubmit = async () => {
+    if (!userInput.trim()) return;
 
-      const pdfDoc = await PDFDocument.create();
-      let currentPage = pdfDoc.addPage([842, 595]); // A4 landscape
-      const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const newMessage = {
+      text: userInput,
+      type: 'user'
+    };
 
-      const margin = {
-        top: 540,
-        left: 20,
-        right: 20,
-        bottom: 20,
-      };
-      const pageWidth = 842 - margin.left - margin.right;
+    setMessages(prev => [...prev, newMessage]);
+    setUserInput('');
 
-      // Draw header
-      currentPage.drawText(sanitizeText('Defects List'), {
-        x: margin.left,
-        y: margin.top,
-        size: 24,
-        font: boldFont,
-        color: rgb(0, 0, 0),
-      });
-
-      currentPage.drawText(`Generated: ${new Date().toLocaleDateString()}`, {
-        x: margin.left,
-        y: margin.top - 30,
-        size: 10,
-        font: helveticaFont,
-        color: rgb(0.4, 0.4, 0.4),
-      });
-
-      // Updated table configuration with Vessel column
-      const tableConfig = {
-        startY: margin.top - 70,
-        columns: [
-          { header: '#', width: 30 },
-          { header: 'Vessel', width: 80 },  // Added Vessel column
-          { header: 'Status', width: 70 },
-          { header: 'Equipment', width: 120 },
-          { header: 'Description', width: 160 },
-          { header: 'Action Planned', width: 160 },
-          { header: 'Criticality', width: 60 },
-          { header: 'Reported', width: 70 },
-          { header: 'Completed', width: 70 },
-        ],
-        lineHeight: 25,
-      };
-
-      // Draw table header background
-      currentPage.drawRectangle({
-        x: margin.left,
-        y: tableConfig.startY - 5,
-        width: pageWidth,
-        height: 30,
-        color: rgb(0.95, 0.95, 0.95),
-      });
-
-      // Draw headers
-      let currentX = margin.left;
-      tableConfig.columns.forEach((column) => {
-        const headerText = sanitizeText(column.header);
-        currentPage.drawText(headerText, {
-          x: currentX + 5,
-          y: tableConfig.startY,
-          size: 10,
-          font: boldFont,
-        });
-        currentX += column.width;
-      });
-
-      let currentY = tableConfig.startY - tableConfig.lineHeight;
-
-      // Draw header separator
-      currentPage.drawLine({
-        start: { x: margin.left, y: tableConfig.startY - 8 },
-        end: { x: margin.left + pageWidth, y: tableConfig.startY - 8 },
-        thickness: 1,
-        color: rgb(0.8, 0.8, 0.8),
-      });
-
-      data.forEach((item, index) => {
-        if (currentY < margin.bottom + 30) {
-          currentPage = pdfDoc.addPage([842, 595]);
-          currentY = tableConfig.startY;
-        }
-
-        // Row background
-        if (index % 2 === 0) {
-          currentPage.drawRectangle({
-            x: margin.left,
-            y: currentY - 5,
-            width: pageWidth,
-            height: tableConfig.lineHeight,
-            color: rgb(0.97, 0.97, 0.97),
-          });
-        }
-
-        // Prepare row data with vessel name
-        const rowData = [
-          (index + 1).toString(),
-          sanitizeText(item.vessel_name || vesselName || '-'), // Added vessel name
-          sanitizeText(item['Status (Vessel)'] || '-'),
-          sanitizeText(item.Equipments || '-'),
-          sanitizeText(item.Description || '-'),
-          sanitizeText(item['Action Planned'] || '-'),
-          sanitizeText(item.Criticality || '-'),
-          item['Date Reported'] ? new Date(item['Date Reported']).toLocaleDateString() : '-',
-          item['Date Completed'] ? new Date(item['Date Completed']).toLocaleDateString() : '-',
-        ];
-
-        // Draw row data
-        currentX = margin.left;
-        tableConfig.columns.forEach((column, colIndex) => {
-          const text = truncateText(rowData[colIndex], column.width - 10, 9, helveticaFont);
-          try {
-            currentPage.drawText(text, {
-              x: currentX + 5,
-              y: currentY,
-              size: 9,
-              font: helveticaFont,
-            });
-          } catch (error) {
-            console.error('Error drawing text:', error);
-            currentPage.drawText('-', {
-              x: currentX + 5,
-              y: currentY,
-              size: 9,
-              font: helveticaFont,
-            });
-          }
-          currentX += column.width;
-        });
-
-        // Row separator
-        currentPage.drawLine({
-          start: { x: margin.left, y: currentY - 8 },
-          end: { x: margin.left + pageWidth, y: currentY - 8 },
-          thickness: 0.5,
-          color: rgb(0.9, 0.9, 0.9),
-        });
-
-        currentY -= tableConfig.lineHeight;
-      });
-
-      // Footer
-      currentPage.drawText('Generated by Defects Manager', {
-        x: 842 / 2 - 70,
-        y: margin.bottom + 10,
-        size: 10,
-        font: helveticaFont,
-        color: rgb(0.4, 0.4, 0.4),
-      });
-
-      // Save and download
-      const pdfBytes = await pdfDoc.save();
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute(
-        'download',
-        `defects-report-${sanitizeText(vesselName)}-${new Date().toISOString().split('T')[0]}.pdf`
-      );
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-
-      setLoading(false);
-      setIsOpen(false);
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      setLoading(false);
-    }
+    const response = await handlePSCQuery(userInput);
+    
+    setMessages(prev => [...prev, {
+      text: response,
+      type: 'bot'
+    }]);
   };
 
   return (
@@ -239,33 +131,73 @@ const ChatBot = ({ data, vesselName, filters }) => {
       </button>
 
       {isOpen && (
-        <div className="fixed bottom-4 right-4 w-80 bg-[#132337] rounded-lg shadow-xl border border-white/10 z-50">
-          <div className="flex items-center justify-between p-4 border-b border-white/10">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-full bg-orange-500 flex items-center justify-center">
-                <MessageCircle className="h-4 w-4 text-white" />
+        <div className="fixed bottom-4 right-4 w-96 bg-[#132337] rounded-lg shadow-xl border border-white/10 z-50">
+          <div className="flex flex-col h-[600px]">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-8 rounded-full bg-orange-500 flex items-center justify-center">
+                  <Shield className="h-4 w-4 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-white">PSC Assistant</h3>
+                  <p className="text-xs text-white/60">Ask about PSC deficiencies</p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-sm font-medium text-white">Ask AI</h3>
-                <p className="text-xs text-white/60">Report Generator</p>
-              </div>
-            </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              className="text-white/60 hover:text-white transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="p-4">
-            <div className="mb-4">
-              <p className="text-sm text-white/80 mb-2">
-                Hello! I can help you generate reports and analysis.
-              </p>
+              <button
+                onClick={() => setIsOpen(false)}
+                className="text-white/60 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
 
-            <div className="space-y-3">
+            {/* Messages Area */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {messages.map((message, index) => (
+                <div
+                  key={index}
+                  className={`${
+                    message.type === 'user' 
+                      ? 'bg-orange-500/10 ml-auto' 
+                      : 'bg-white/5'
+                  } rounded-lg p-3 max-w-[80%]`}
+                >
+                  <pre className="text-xs text-white/90 whitespace-pre-wrap">
+                    {message.text}
+                  </pre>
+                </div>
+              ))}
+            </div>
+
+            {/* Input Area */}
+            <div className="p-4 border-t border-white/10">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      handleMessageSubmit();
+                    }
+                  }}
+                  placeholder="Ask about PSC deficiencies..."
+                  className="flex-1 bg-white/5 rounded-md px-3 py-2 text-sm text-white 
+                    focus:outline-none focus:ring-1 focus:ring-orange-500"
+                />
+                <button
+                  onClick={handleMessageSubmit}
+                  className="bg-orange-500 text-white px-4 py-2 rounded-md text-sm 
+                    hover:bg-orange-600 transition-colors"
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+
+            {/* Keep your existing Generate Report button */}
+            <div className="p-4 border-t border-white/10">
               <button
                 onClick={generatePDF}
                 disabled={loading}
@@ -281,18 +213,6 @@ const ChatBot = ({ data, vesselName, filters }) => {
                     Generate Defects Report
                   </>
                 )}
-              </button>
-
-              <button
-                onClick={() => {
-                  console.log('PSC button clicked');
-                }}
-                className="w-full py-2 px-4 bg-orange-500/20 text-white text-sm rounded-md
-                hover:bg-orange-500/30 transition-colors
-                flex items-center justify-center gap-2"
-              >
-                <Shield className="h-4 w-4" />
-                Expected PSC Observations
               </button>
             </div>
           </div>
