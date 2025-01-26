@@ -1,6 +1,6 @@
 // src/utils/pscAnalysis.js
 
-const CRITICALITY_MAPPING = {
+export const CRITICALITY_MAPPING = {
   '10': 'Low - Deficiency Rectified',
   '40': 'Medium - Next Port Informed',
   '18': 'Medium - Rectify Within 3 Months',
