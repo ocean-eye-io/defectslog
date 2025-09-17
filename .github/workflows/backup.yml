@@ -1,0 +1,38 @@
+name: Master Branch Backup to S3
+ 
+on:
+  push:
+    branches:
+      - main
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # Required for OIDC
+      contents: read
+ 
+    steps:
+      - name: Checkout master branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+ 
+      - name: Get repo name
+        id: repo
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+ 
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::460835339073:role/GitHubActionsOIDCRole
+          aws-region: ap-south-1
+ 
+      - name: Create archive including .git
+        run: zip -r $REPO_NAME.zip .
+ 
+      - name: Upload to S3
+        run: |
+          FILE_NAME="${REPO_NAME}-$(date +'%Y-%m-%d').zip"
+          echo "Uploading as $FILE_NAME"
+          aws s3 cp $REPO_NAME.zip s3://github-repos-bkp/backups/$FILE_NAME
