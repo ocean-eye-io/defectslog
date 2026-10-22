@@ -1,0 +1,286 @@
+name: Full Repo Security Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: 'Severity levels to scan'
+        required: false
+        default: 'CRITICAL,HIGH,MEDIUM'
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TRIVY_SKIP_JAVA_DB_UPDATE: 'true'
+
+jobs:
+  scan-deps:
+    name: Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Run dependency scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'vuln'
+          severity: ${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}
+          ignore-unfixed: true
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor'
+          format: 'table'
+          exit-code: '0'
+      - name: Run dependency scan JSON
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'vuln'
+          severity: ${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}
+          ignore-unfixed: true
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor'
+          format: 'json'
+          output: 'deps-report.json'
+          exit-code: '0'
+      - name: Upload deps report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deps-report-${{ github.event.repository.name }}
+          path: deps-report.json
+          retention-days: 7
+      - if: always()
+        run: |
+          COUNT=$(cat deps-report.json 2>/dev/null | grep -o '"VulnerabilityID"' | wc -l | tr -d ' ')
+          echo "## 📦 Dependency Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- Total findings: **$COUNT**" >> $GITHUB_STEP_SUMMARY
+          echo "- Severity: \`${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}\` | Ignore unfixed: \`true\`" >> $GITHUB_STEP_SUMMARY
+
+  scan-secrets:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Run secret scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'secret'
+          severity: ${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor'
+          format: 'table'
+          exit-code: '0'
+      - name: Run secret scan JSON
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'secret'
+          severity: ${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor'
+          format: 'json'
+          output: 'secrets-report.json'
+          exit-code: '0'
+      - name: Upload secrets report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: secrets-report-${{ github.event.repository.name }}
+          path: secrets-report.json
+          retention-days: 7
+      - if: always()
+        run: |
+          COUNT=$(cat secrets-report.json 2>/dev/null | grep -o '"RuleID"' | wc -l | tr -d ' ')
+          echo "## 🔑 Secret Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- Total findings: **$COUNT**" >> $GITHUB_STEP_SUMMARY
+
+  scan-misconfig:
+    name: Misconfiguration Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Create trivyignore
+        run: |
+          printf 'KSV-0125\n' > /tmp/trivy-misconfig.ignore
+      - name: Render kustomize overlays (if present)
+        if: github.event.pull_request.head.repo.fork != true
+        run: |
+          if [ -d k8s/overlays ]; then
+            mkdir -p rendered-overlays
+            while IFS= read -r -d '' k; do
+              [ -f "$k" ] || continue
+              dir=$(dirname "$k")
+              rel="${dir#k8s/overlays/}"
+              safe=$(echo "$rel" | sed 's#/#__#g')
+              if kubectl kustomize "$dir" > "/tmp/${safe}.yaml" 2>/tmp/kustomize-err.txt; then
+                mv "/tmp/${safe}.yaml" "rendered-overlays/${safe}.yaml"
+              else
+                echo "::warning::kustomize render failed for $dir: $(cat /tmp/kustomize-err.txt)"
+                rm -f "/tmp/${safe}.yaml"
+              fi
+            done < <(find k8s/overlays \( -name kustomization.yaml -o -name kustomization.yml -o -name Kustomization \) -print0)
+            COUNT=$(ls rendered-overlays 2>/dev/null | wc -l | tr -d ' ')
+            echo "Rendered $COUNT overlays"
+          else
+            echo "No k8s/overlays found — skipping kustomize render"
+          fi
+      - name: Run misconfig scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          severity: ${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor,k8s/overlays'
+          trivyignores: '/tmp/trivy-misconfig.ignore'
+          format: 'table'
+          exit-code: '0'
+      - name: Run misconfig scan JSON
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          severity: ${{ inputs.severity || 'CRITICAL,HIGH,MEDIUM' }}
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor,k8s/overlays'
+          trivyignores: '/tmp/trivy-misconfig.ignore'
+          format: 'json'
+          output: 'misconfig-report.json'
+          exit-code: '0'
+      - name: Upload misconfig report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: misconfig-report-${{ github.event.repository.name }}
+          path: misconfig-report.json
+          retention-days: 7
+      - if: always()
+        run: |
+          COUNT=$(cat misconfig-report.json 2>/dev/null | grep -o '"ID"' | wc -l | tr -d ' ')
+          echo "## 🐳 Misconfiguration Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- Repo findings: **$COUNT**" >> $GITHUB_STEP_SUMMARY
+
+  scan-sast:
+    name: SAST Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - run: pip install semgrep
+      - name: Run SAST scan
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --config p/secrets \
+            --config p/typescript \
+            --config p/nodejs \
+            --exclude-rule javascript.lang.security.detect-eval-with-expression.detect-eval-with-expression \
+            --metrics=off \
+            --json \
+            --output sast-report.json 2>/dev/null || true
+          semgrep scan \
+            --config p/security-audit \
+            --config p/secrets \
+            --config p/typescript \
+            --config p/nodejs \
+            --exclude-rule javascript.lang.security.detect-eval-with-expression.detect-eval-with-expression \
+            --metrics=off 2>/dev/null || true
+      - name: Upload SAST report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sast-report-${{ github.event.repository.name }}
+          path: sast-report.json
+          retention-days: 7
+      - if: always()
+        run: |
+          COUNT=$(cat sast-report.json 2>/dev/null | grep -o '"check_id"' | wc -l | tr -d ' ')
+          echo "## 🔍 SAST Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- Total findings: **$COUNT**" >> $GITHUB_STEP_SUMMARY
+
+  scan-gitleaks:
+    name: Git History Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Install Gitleaks
+        run: |
+          V="8.30.1"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+      - name: Run Gitleaks full history
+        run: |
+          gitleaks detect \
+            --source . \
+            --redact \
+            --verbose \
+            --report-format json \
+            --report-path gitleaks-report.json \
+            --exit-code 0 || true
+      - name: Upload Gitleaks report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gitleaks-report-${{ github.event.repository.name }}
+          path: gitleaks-report.json
+          retention-days: 7
+      - if: always()
+        run: |
+          COUNT=$(cat gitleaks-report.json 2>/dev/null | grep -o '"RuleID"' | wc -l | tr -d ' ')
+          echo "## 🔐 Git History Secret Scan" >> $GITHUB_STEP_SUMMARY
+          echo "- Total findings: **$COUNT**" >> $GITHUB_STEP_SUMMARY
+
+  scan-sbom:
+    name: License Scan and SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Run license scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'license'
+          severity: 'CRITICAL,HIGH'
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor'
+          format: 'table'
+          exit-code: '0'
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'cyclonedx'
+          output: 'sbom.cyclonedx.json'
+          skip-dirs: 'node_modules,dist,build,.next,.turbo,.cache,vendor'
+          exit-code: '0'
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ github.event.repository.name }}
+          path: sbom.cyclonedx.json
+          retention-days: 7
+      - if: always()
+        run: |
+          echo "## ⚖️ License Scan + SBOM" >> $GITHUB_STEP_SUMMARY
+          echo "- SBOM uploaded as artifact (CycloneDX format)" >> $GITHUB_STEP_SUMMARY
